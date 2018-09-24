@@ -2,10 +2,48 @@ from __future__ import print_function
 import pysam
 import argparse
 import collections
+import numpy as np
+import datetime
+import scipy
 from FisherExact import fisher_exact
+from Bio import SeqIO
 
 
-def correct_from_pileup(bam_file_name, thresh_all, thresh_read, ref_len):
+def print_vcf_header(ref_name, ref_len, bam_path, vcf_handle):
+    header_lines=["##fileformat=VCFv4.2",
+                  "##source=correct_by_consensus.py",
+                  "##fileDate={:%d-%m-%Y}".format(datetime.date.today()),
+                  "##contig=<ID={},length={}>".format(ref_name, ref_len),
+                  "##INFO=<ID=DP,Number=1,Type=Integer,Description=\"Depth of coverage at this position\">",
+                  "##INFO=<ID=AF,Number=1,Type=Float,Description=\"Observations of the alternate allele on individual reads as a proportion of total coverage\">",
+                  "##INFO=<ID=SRF,Number=1,Type=Integer,Description=\"Number of forward strand concatamers without alternate allele observations\">",
+                  "##INFO=<ID=SRR,Number=1,Type=Integer,Description=\"Number of reverse strand concatamers without alternate allele observations\">",
+                  "##INFO=<ID=SAF,Number=A,Type=Integer,Description=\"Number of alternate observations in forward strand concatamers\">",
+                  "##INFO=<ID=SAR,Number=A,Type=Integer,Description=\"Number of alternate observations in reverse strand concatamers\">",
+                  "##INFO=<ID=SBP,Number=A,Type=Float,Description=\"Strand bias p value, calculated using chisq test on [[SRF, SRR], [SAF, SAR]]\">",
+                  "##FORMAT=<ID=GT,Number=1,Type=String,Description=\"Genotype\">"]
+    [print(line, file=vcf_handle) for line in header_lines]
+    vcf_header = ["#CHROM", "POS", "ID", "REF", "ALT", "QUAL", "FILTER", "INFO", "FORMAT", bam_path]
+    print("\t".join(vcf_header), file=vcf_handle)
+
+
+def add_to_vcf(chrom, pos, id, ref, alt, qual, info, strand_counts, gt, filehandle):
+    # calculate chisq statistic for strand/allele counts, with Yates' correction applied:
+    try:
+        chi2, p_val, dof, ex = scipy.stats.chi2_contingency([[strand_counts[0], strand_counts[1]],
+                                                            [strand_counts[2], strand_counts[3]]])
+    except ValueError: # this is due to zero expected frequency
+        p_val = ""
+    info_field = 'DP={};AF={};SRF={};SRR={};SAF={};SAR={};SBP={}'.format(info[0], info[1],
+                                                                  strand_counts[0], strand_counts[1],
+                                                                  strand_counts[2], strand_counts[3],
+                                                                  p_val)
+    format_field = '{}'.format(gt)
+    vcf_line=[chrom, str(pos + 1), str(id), ref, alt, str(qual), ".", info_field, "GT", format_field]
+    print("\t".join(vcf_line), file=filehandle)
+
+
+def correct_from_pileup(bam_file_name, thresh_all, thresh_read, ref_seq, ref_name, vcf_handle):
     """
     more sophisticated consensus correction
     inputs : bamfile of all reads, grouped by original concatamer with the RG tag
@@ -17,7 +55,10 @@ def correct_from_pileup(bam_file_name, thresh_all, thresh_read, ref_len):
       Is there evidence of association between base and RG? (use Fisher's exact test, with 4 base categories)
     """
     samfile = pysam.AlignmentFile(bam_file_name, "rb")
-    cons_seq = ["-"] * ref_len
+    cons_seq = ["-"] * len(ref_seq)
+    next_id = 1
+
+    base_mapping = {key:value for (key, value) in zip(['A','C','T','G'], range(4))}
 
     # make a dictionary of all read groups
     all_RGs = []
@@ -26,7 +67,7 @@ def correct_from_pileup(bam_file_name, thresh_all, thresh_read, ref_len):
 
     unique_RGs = list(set(all_RGs))
     RG_dict = {RG: index for (index, RG) in enumerate(unique_RGs)}
-    corrected_seqs = [["-"] * ref_len for _ in range(len(unique_RGs))]
+    corrected_seqs = [["-"] * len(ref_seq) for _ in range(len(unique_RGs))]
 
 
     for pileupcolumn in samfile.pileup(stepper="all"):
@@ -90,29 +131,32 @@ def correct_from_pileup(bam_file_name, thresh_all, thresh_read, ref_len):
                     break
 
         # Now, on both fw and rev strand data (separately) conduct fisher's exact test
+        fw_p_val = None
+        # this freq mx will be used later to record strandedness of potential variants
+        freq_mx_fw = []
+        for read_group in RG_fw_set:
+            RG_bases = [base for i, base in enumerate(bases_fw) if RG_fw[i] == read_group]
+            counter = collections.Counter(RG_bases)
+            RG_freq = [counter[l] for l in "ACTG"]
+            freq_mx_fw.append(RG_freq)
+
         if polymorphic_potential_fw:
             print("fw polymorphism test")
-            freq_mx = []
-            for read_group in RG_fw_set:
-                RG_bases = [base for i, base in enumerate(bases_fw) if RG_fw[i] == read_group]
-                counter = collections.Counter(RG_bases)
-                RG_freq = [counter[l] for l in "ACTG"]
-                freq_mx.append(RG_freq)
             try:
-                p_val = fisher_exact(freq_mx, simulate_pval=True)
+                fw_p_val = fisher_exact(freq_mx_fw, simulate_pval=True)
             except ValueError:
                 # ValueError will be raised if less than 2 non-zero columns or rows
                 # i.e if all reads have the same base call, or if there is only one read group with coverage here
                 # take the consensus within each read group in this case.
-                p_val = 0.01
+                fw_p_val = None
 
-            if p_val > 0.02: # then just assign consensus base to all fw sequences
+            if fw_p_val > 0.02: # then just assign consensus base to all fw sequences
                 for read_group in RG_fw_set:
                     corrected_seqs[RG_dict[read_group]][pos] = cons_base
 
             else:
                 for seqi, read_group in enumerate(RG_fw_set):
-                    base_distrib = freq_mx[seqi]
+                    base_distrib = freq_mx_fw[seqi]
                     if float(max(base_distrib))/sum(base_distrib) > thresh_read:
                         base_index = [i for i, val in enumerate(base_distrib) if val==max(base_distrib)][0]
                         corrected_seqs[RG_dict[read_group]][pos] = 'ACTG'[base_index]
@@ -124,26 +168,28 @@ def correct_from_pileup(bam_file_name, thresh_all, thresh_read, ref_len):
                 corrected_seqs[RG_dict[read_group]][pos] = cons_base
 
         # repeat all over again for reverse (should be a different set of read groups)
+        rv_p_val = None
+        freq_mx_rv = []
+        for read_group in RG_rv_set:
+            RG_bases = [base for i, base in enumerate(bases_rv) if RG_rv[i] == read_group]
+            counter = collections.Counter(RG_bases)
+            RG_freq = [counter[l] for l in "ACTG"]
+            freq_mx_rv.append(RG_freq)
+
         if polymorphic_potential_rv:
             print("rv polymorphism test")
-            freq_mx = []
-            for read_group in RG_rv_set:
-                RG_bases = [base for i, base in enumerate(bases_rv) if RG_rv[i] == read_group]
-                counter = collections.Counter(RG_bases)
-                RG_freq = [counter[l] for l in "ACTG"]
-                freq_mx.append(RG_freq)
             try:
-                p_val = fisher_exact(freq_mx, simulate_pval=True)
+                rv_p_val = fisher_exact(freq_mx_rv, simulate_pval=True)
             except ValueError:
-                p_val = 0.01
+                rv_p_val = None
 
-            if p_val > 0.02:  # then just assign consensus base to all sequences
+            if rv_p_val > 0.02:  # then just assign consensus base to all sequences
                 for read_group in RG_rv_set:
                     corrected_seqs[RG_dict[read_group]][pos] = cons_base
 
             else:
                 for seqi, read_group in enumerate(RG_rv_set):
-                    base_distrib = freq_mx[seqi]
+                    base_distrib = freq_mx_rv[seqi]
                     if float(max(base_distrib)) / sum(base_distrib) > thresh_read:
                         base_index = [i for i, val in enumerate(base_distrib) if val == max(base_distrib)][0]
                         corrected_seqs[RG_dict[read_group]][pos] = 'ACTG'[base_index]
@@ -155,20 +201,79 @@ def correct_from_pileup(bam_file_name, thresh_all, thresh_read, ref_len):
             for read_group in RG_rv_set:
                 corrected_seqs[RG_dict[read_group]][pos] = cons_base
 
+        ref_base = ref_seq[pos]
+        if not polymorphic_potential_fw and not polymorphic_potential_rv and cons_base != ref_base:
+            if cons_base!="-":
+                # cons_base might be "N" if most_common_fw was different from most_common_rv,
+                # or if one of %s was not over thresh_all
+                # Note that thresh_all is less than 50%, and might be good to use a more stringent threshold for GT=1/1
+                counter_all = collections.Counter(bases_fw + bases_rv)
+                alt_base, freq_alt = counter_all.most_common(1)[0]
+                prop_alt = float(freq_alt)/len(bases_fw + bases_rv)
+                # how many of the fw and rv read groups contain the ref and alt bases?
+                srf = sum( np.array(freq_mx_fw)[:, base_mapping[alt_base]] == 0 )
+                srr = sum( np.array(freq_mx_rv)[:, base_mapping[alt_base]] == 0 )
+                saf = sum( np.array(freq_mx_fw)[:, base_mapping[alt_base]] > 0 )
+                sar = sum( np.array(freq_mx_rv)[:, base_mapping[alt_base]] > 0 )
+                if prop_alt > 0.8:
+                    add_to_vcf(chrom=ref_name, pos=pos, id=next_id, ref=ref_base, alt=alt_base, qual=".",
+                               info=[len(bases_fw + bases_rv), prop_alt],
+                               strand_counts=[srf,srr,saf,sar], gt="1/1", filehandle=vcf_handle)
+                    next_id += 1
+                else:
+                    add_to_vcf(chrom=ref_name, pos=pos, id=next_id, ref=ref_base, alt=alt_base, qual=0,
+                               info=[len(bases_fw + bases_rv), prop_alt],
+                               strand_counts=[srf,srr,saf,sar], gt = "0/1", filehandle=vcf_handle)
+                    next_id += 1
+
+        elif polymorphic_potential_fw or polymorphic_potential_rv:
+            # note that polymorphic_potential can only be true if cons_base!="-"
+            # we will define the alt base as the most common base that is not the reference base
+            counter_all = collections.Counter(bases_fw + bases_rv)
+            top_two = counter_all.most_common(2)
+            if ref_base == top_two[0][0]:
+                alt_base, freq_alt = top_two[1]
+            else:
+                alt_base, freq_alt = top_two[0]
+
+            prop_alt = float(freq_alt) / len(bases_fw + bases_rv)
+            srf = sum(np.array(freq_mx_fw)[:, base_mapping[alt_base]] == 0)
+            srr = sum(np.array(freq_mx_rv)[:, base_mapping[alt_base]] == 0)
+            saf = sum(np.array(freq_mx_fw)[:, base_mapping[alt_base]] > 0)
+            sar = sum(np.array(freq_mx_rv)[:, base_mapping[alt_base]] > 0)
+            # calculate phred based qual score, based on -10log_10 prob(call in ALT is wrong)
+            if fw_p_val > 0 and rv_p_val > 0:
+                qual = -10 * np.log10(fw_p_val * rv_p_val)
+            elif fw_p_val > 0:
+                qual = -10 * np.log10(fw_p_val)
+            elif rv_p_val > 0:
+                qual = -10 * np.log10(rv_p_val)
+            elif fw_p_val == 0 or rv_p_val == 0:
+                # set an (arbirary) high qual score
+                qual = 100
+            else:
+                # not enough data to assess polymorphic potential based on distribution across read groups
+                qual = "."
+
+            add_to_vcf(chrom=ref_name, pos=pos, id=next_id, ref=ref_base, alt=alt_base, qual=qual,
+                       info=[len(bases_fw + bases_rv), prop_alt],
+                       strand_counts=[srf, srr, saf, sar], gt="0/1", filehandle=vcf_handle)
+            next_id += 1
+
 
     return "".join(cons_seq), corrected_seqs, unique_RGs
 
 
-def correct_by_consensus_only(bam_file_name, thresh, ref_len):
+def correct_by_consensus_only(bam_file_name, thresh, ref_seq):
     """
     correct reads simply by taking the consensus within a read group
     :param bam_file_name: bam file with all reads, grouped by cancatamer using RG tag
     :param thresh: threshold for base frequency to be considered consensus (otherwise record "N")
-    :param ref_len: length of genotype reference that has been aligned to
+    :param ref_seq: sequence of genotype reference that has been aligned to
     :return: 
     """
     samfile = pysam.AlignmentFile(bam_file_name, "rb")
-    cons_seq = ["-"] * ref_len
+    cons_seq = ["-"] * len(ref_seq)
 
     # make a dictionary of all read groups
     all_RGs = []
@@ -177,7 +282,7 @@ def correct_by_consensus_only(bam_file_name, thresh, ref_len):
 
     unique_RGs = list(set(all_RGs))
     RG_dict = {RG: index for (index, RG) in enumerate(unique_RGs)}
-    corrected_seqs = [["-"] * ref_len for _ in range(len(unique_RGs))]
+    corrected_seqs = [["-"] * len(ref_seq) for _ in range(len(unique_RGs))]
 
     for pileupcolumn in samfile.pileup(stepper="all"):
         pos = pileupcolumn.pos
@@ -227,21 +332,38 @@ def correct_by_consensus_only(bam_file_name, thresh, ref_len):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('allbam', type=str, help="path to bamfile with all reads")
+    parser.add_argument('ref_seq', type=str, help="path to fasta file containing (single) reference sequence")
     parser.add_argument('fasta_out', type=str, help="output corrected fasta")
+    parser.add_argument('vcf_out', type=str, help="output vcf of variant calls")
     parser.add_argument('--cons_type', type=str, default="error_correct",
                         help="Use error_correct or consensus_only")
     args = parser.parse_args()
 
-    # I have over estimated the reference length, but the extra "-"s can be trimmed later
-    if args.cons_type=="error_correct":
-        patient_consensus, corrected_reads, unique_RGs = correct_from_pileup(args.allbam,
-                                                                             thresh_all=0.4,
-                                                                             thresh_read=0.6,
-                                                                             ref_len=3400)
-    else:
-        patient_consensus, corrected_reads, unique_RGs = correct_by_consensus_only(args.allbam,
-                                                                                   thresh=0.4,
-                                                                                   ref_len=3400)
+
+    try:
+        record = SeqIO.read(args.ref_seq, "fasta")
+    except ValueError:
+        print("error reading reference fasta. Does it contain exactly one record?")
+        exit(1)
+
+    ref = list(record.seq)
+    ref_id = record.id
+
+    with open(args.vcf_out, 'w') as vcf_out:
+        print_vcf_header(ref_id, len(ref), args.allbam, vcf_out)
+
+        if args.cons_type=="error_correct":
+            patient_consensus, corrected_reads, unique_RGs = correct_from_pileup(args.allbam,
+                                                                                 thresh_all=0.4,
+                                                                                 thresh_read=0.6,
+                                                                                 ref_seq=ref,
+                                                                                 ref_name=ref_id,
+                                                                                 vcf_handle=vcf_out)
+
+        else:
+            patient_consensus, corrected_reads, unique_RGs = correct_by_consensus_only(args.allbam,
+                                                                                       thresh=0.4,
+                                                                                       ref_seq=ref)
     # print results as a fasta file
     with open(args.fasta_out, 'w') as outfile:
         print(">patient_consensus",file=outfile)
