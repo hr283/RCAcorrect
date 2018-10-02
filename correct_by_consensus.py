@@ -98,7 +98,7 @@ def correct_from_pileup(bam_file_name, thresh_all, thresh_read, ref_seq, ref_nam
             most_common_fw, freq_fw = counter_fw.most_common(1)[0]
             counter_rv = collections.Counter(bases_rv)
             most_common_rv, freq_rv = counter_rv.most_common(1)[0]
-            if float(freq_fw)/len(bases_fw) > thresh_all and float(freq_rv)/len(bases_rv) > thresh_all \
+            if (float(freq_fw) + float(freq_rv))/(len(bases_fw) + len(bases_rv)) > thresh_all \
                     and most_common_fw == most_common_rv:
                 cons_base=most_common_fw
             else:
@@ -140,33 +140,6 @@ def correct_from_pileup(bam_file_name, thresh_all, thresh_read, ref_seq, ref_nam
             RG_freq = [counter[l] for l in "ACTG"]
             freq_mx_fw.append(RG_freq)
 
-        if polymorphic_potential_fw:
-            print("fw polymorphism test")
-            try:
-                fw_p_val = fisher_exact(freq_mx_fw, simulate_pval=True)
-            except ValueError:
-                # ValueError will be raised if less than 2 non-zero columns or rows
-                # i.e if all reads have the same base call, or if there is only one read group with coverage here
-                # take the consensus within each read group in this case.
-                fw_p_val = None
-
-            if fw_p_val > 0.02: # then just assign consensus base to all fw sequences
-                for read_group in RG_fw_set:
-                    corrected_seqs[RG_dict[read_group]][pos] = cons_base
-
-            else:
-                for seqi, read_group in enumerate(RG_fw_set):
-                    base_distrib = freq_mx_fw[seqi]
-                    if float(max(base_distrib))/sum(base_distrib) > thresh_read:
-                        base_index = [i for i, val in enumerate(base_distrib) if val==max(base_distrib)][0]
-                        corrected_seqs[RG_dict[read_group]][pos] = 'ACTG'[base_index]
-                    else:
-                        corrected_seqs[RG_dict[read_group]][pos] = cons_base
-
-        else: # no polymorphic potential, assign consensus base to all fw sequences
-            for read_group in RG_fw_set:
-                corrected_seqs[RG_dict[read_group]][pos] = cons_base
-
         # repeat all over again for reverse (should be a different set of read groups)
         rv_p_val = None
         freq_mx_rv = []
@@ -176,18 +149,23 @@ def correct_from_pileup(bam_file_name, thresh_all, thresh_read, ref_seq, ref_nam
             RG_freq = [counter[l] for l in "ACTG"]
             freq_mx_rv.append(RG_freq)
 
-        if polymorphic_potential_rv:
-            print("rv polymorphism test")
+        if polymorphic_potential_fw and polymorphic_potential_rv:
+            print("polymorphism tests")
+            try:
+                fw_p_val = fisher_exact(freq_mx_fw, simulate_pval=True)
+            except ValueError:
+                # ValueError will be raised if less than 2 non-zero columns or rows
+                # i.e if all reads have the same base call, or if there is only one read group with coverage here
+                # take the consensus across all sites here.
+                # TODO: check this doesn't produce very different results - it's not the original method.
+                fw_p_val = None
+
             try:
                 rv_p_val = fisher_exact(freq_mx_rv, simulate_pval=True)
             except ValueError:
                 rv_p_val = None
 
-            if rv_p_val > 0.02:  # then just assign consensus base to all sequences
-                for read_group in RG_rv_set:
-                    corrected_seqs[RG_dict[read_group]][pos] = cons_base
-
-            else:
+            if fw_p_val < 0.2 and rv_p_val < 0.2:
                 for seqi, read_group in enumerate(RG_rv_set):
                     base_distrib = freq_mx_rv[seqi]
                     if float(max(base_distrib)) / sum(base_distrib) > thresh_read:
@@ -196,16 +174,32 @@ def correct_from_pileup(bam_file_name, thresh_all, thresh_read, ref_seq, ref_nam
                     else:
                         corrected_seqs[RG_dict[read_group]][pos] = cons_base
 
+                for seqi, read_group in enumerate(RG_fw_set):
+                    base_distrib = freq_mx_fw[seqi]
+                    if float(max(base_distrib)) / sum(base_distrib) > thresh_read:
+                        base_index = [i for i, val in enumerate(base_distrib) if val == max(base_distrib)][0]
+                        corrected_seqs[RG_dict[read_group]][pos] = 'ACTG'[base_index]
+                    else:
+                        corrected_seqs[RG_dict[read_group]][pos] = cons_base
 
-        else:
+            else: # Not enough evidence for polymorphism, assign consensus base at this site to all concatamers
+                for read_group in RG_fw_set:
+                    corrected_seqs[RG_dict[read_group]][pos] = cons_base
+                for read_group in RG_rv_set:
+                    corrected_seqs[RG_dict[read_group]][pos] = cons_base
+
+        else: # no polymorphic potential, assign consensus base to all sequences
+            for read_group in RG_fw_set:
+                corrected_seqs[RG_dict[read_group]][pos] = cons_base
             for read_group in RG_rv_set:
                 corrected_seqs[RG_dict[read_group]][pos] = cons_base
 
         ref_base = ref_seq[pos]
         if not polymorphic_potential_fw and not polymorphic_potential_rv and cons_base != ref_base:
+            # Add to vcf sites where there is little evidence for polymorphism but consensus base differs from consensus
             if cons_base!="-":
                 # cons_base might be "N" if most_common_fw was different from most_common_rv,
-                # or if one of %s was not over thresh_all
+                # or if the total % was not over thresh_all
                 # Note that thresh_all is less than 50%, and might be good to use a more stringent threshold for GT=1/1
                 counter_all = collections.Counter(bases_fw + bases_rv)
                 alt_base, freq_alt = counter_all.most_common(1)[0]
@@ -226,12 +220,18 @@ def correct_from_pileup(bam_file_name, thresh_all, thresh_read, ref_seq, ref_nam
                                strand_counts=[srf,srr,saf,sar], gt = "0/1", filehandle=vcf_handle)
                     next_id += 1
 
+        # Want to be lenient in initial vcf output, can filter later, but for now include all sites that had
+        # evidence of polymorphism when considering either strand set.
         elif polymorphic_potential_fw or polymorphic_potential_rv:
             # note that polymorphic_potential can only be true if cons_base!="-"
             # we will define the alt base as the most common base that is not the reference base
             counter_all = collections.Counter(bases_fw + bases_rv)
             top_two = counter_all.most_common(2)
-            if ref_base == top_two[0][0]:
+            if cons_base=="N":
+                working_ref = ref_base
+            else:
+                working_ref = cons_base
+            if working_ref == top_two[0][0]:
                 alt_base, freq_alt = top_two[1]
             else:
                 alt_base, freq_alt = top_two[0]
@@ -255,7 +255,7 @@ def correct_from_pileup(bam_file_name, thresh_all, thresh_read, ref_seq, ref_nam
                 # not enough data to assess polymorphic potential based on distribution across read groups
                 qual = "."
 
-            add_to_vcf(chrom=ref_name, pos=pos, id=next_id, ref=ref_base, alt=alt_base, qual=qual,
+            add_to_vcf(chrom=ref_name, pos=pos, id=next_id, ref=working_ref, alt=alt_base, qual=qual,
                        info=[len(bases_fw + bases_rv), prop_alt],
                        strand_counts=[srf, srr, saf, sar], gt="0/1", filehandle=vcf_handle)
             next_id += 1
