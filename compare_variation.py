@@ -77,8 +77,7 @@ def get_nanopore_variation(fasta_name, consensus, variable_positions=None):
     for position, base in enumerate(list(consensus)):
         counter = collections.Counter(seq_array[:,position])
         num_consensus = counter[base]
-        #TODO: could change this to > 2
-        if num_seqs - counter["N"] > 2:
+        if num_seqs - counter["N"] - counter["-"] > 2:
             non_consensus = 1 - float(num_consensus)/float(num_seqs - counter["N"])
         else:
             non_consensus = "NA"
