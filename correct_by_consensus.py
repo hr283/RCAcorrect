@@ -27,13 +27,8 @@ def print_vcf_header(ref_name, ref_len, bam_path, vcf_handle):
     print("\t".join(vcf_header), file=vcf_handle)
 
 
-def add_to_vcf(chrom, pos, id, ref, alt, qual, info, strand_counts, gt, filehandle):
-    # calculate chisq statistic for strand/allele counts, with Yates' correction applied:
-    try:
-        chi2, p_val, dof, ex = scipy.stats.chi2_contingency([[strand_counts[0], strand_counts[1]],
-                                                            [strand_counts[2], strand_counts[3]]])
-    except ValueError: # this is due to zero expected frequency
-        p_val = ""
+def add_to_vcf(chrom, pos, id, ref, alt, qual, info, strand_counts, p_val, gt, filehandle):
+
     info_field = 'DP={};AF={};SRF={};SRR={};SAF={};SAR={};SBP={}'.format(info[0], info[1],
                                                                   strand_counts[0], strand_counts[1],
                                                                   strand_counts[2], strand_counts[3],
@@ -53,6 +48,8 @@ def correct_from_pileup(bam_file_name, thresh_all, thresh_read, ref_seq, ref_nam
       Is there any read that seems to be non-consensus at this site (threshold of thresh_read to call confidently)
       If so then construct table with read group and base at that site. 
       Is there evidence of association between base and RG? (use Fisher's exact test, with 4 base categories)
+    Additionally, is there any significant evidence of strand bias at this site?
+      
     """
     samfile = pysam.AlignmentFile(bam_file_name, "rb")
     cons_seq = ["-"] * len(ref_seq)
@@ -72,6 +69,7 @@ def correct_from_pileup(bam_file_name, thresh_all, thresh_read, ref_seq, ref_nam
 
     for pileupcolumn in samfile.pileup(stepper="all"):
         pos = pileupcolumn.pos
+        ref_base = ref_seq[pos]
         # record base and read group. Want to be able to split reads by plus/minus strand
         bases_fw = []
         bases_rv = []
@@ -157,7 +155,6 @@ def correct_from_pileup(bam_file_name, thresh_all, thresh_read, ref_seq, ref_nam
                 # ValueError will be raised if less than 2 non-zero columns or rows
                 # i.e if all reads have the same base call, or if there is only one read group with coverage here
                 # take the consensus across all sites here.
-                # TODO: check this doesn't produce very different results - it's not the original method.
                 fw_p_val = None
 
             try:
@@ -165,7 +162,42 @@ def correct_from_pileup(bam_file_name, thresh_all, thresh_read, ref_seq, ref_nam
             except ValueError:
                 rv_p_val = None
 
-            if fw_p_val < 0.2 and rv_p_val < 0.2:
+            # Filter for strand specificity
+            counter_all = collections.Counter(bases_fw + bases_rv)
+            top_two = counter_all.most_common(2)
+            if cons_base == "N":
+                working_ref = ref_base
+            else:
+                working_ref = cons_base
+            if working_ref == top_two[0][0]:
+                alt_base, freq_alt = top_two[1]
+            else:
+                alt_base, freq_alt = top_two[0]
+
+            srf = sum(np.array(freq_mx_fw)[:, base_mapping[alt_base]] == 0)
+            srr = sum(np.array(freq_mx_rv)[:, base_mapping[alt_base]] == 0)
+            saf = sum(np.array(freq_mx_fw)[:, base_mapping[alt_base]] > 0)
+            sar = sum(np.array(freq_mx_rv)[:, base_mapping[alt_base]] > 0)
+
+            try:
+                # calculate chisq statistic for strand/allele counts, with Yates' correction applied:
+                chi2, p_val, dof, ex = scipy.stats.chi2_contingency([[srf, srr],
+                                                                     [saf, sar]])
+                if p_val > 0.01:
+                    strand_bias_pass = True
+                else:
+                    strand_bias_pass = False
+
+            except ValueError:  # this is due to zero expected frequency
+                strand_bias_pass = False
+
+            # correct sites as 'variants' if there is strong concatamer-association in both plus and minus strand data,
+            # and if there is NOT strand specificity at a significance level of p <0.01
+            # I am not sure what level to choose here for concatemer association - we could go for very stringent,
+            # knowing that it works because of our post-hoc analysis. But it would be nice to show that a sensibly
+            # chosen p-value works (i.e. we would have been able to produce good results w/o seeing Illumina data!
+            if fw_p_val < 0.01 and rv_p_val < 0.01 and strand_bias_pass:
+                print("variant at site ", pos)
                 for seqi, read_group in enumerate(RG_rv_set):
                     base_distrib = freq_mx_rv[seqi]
                     if float(max(base_distrib)) / sum(base_distrib) > thresh_read:
@@ -194,37 +226,11 @@ def correct_from_pileup(bam_file_name, thresh_all, thresh_read, ref_seq, ref_nam
             for read_group in RG_rv_set:
                 corrected_seqs[RG_dict[read_group]][pos] = cons_base
 
-        ref_base = ref_seq[pos]
-        if not polymorphic_potential_fw and not polymorphic_potential_rv and cons_base != ref_base:
-            # Add to vcf sites where there is little evidence for polymorphism but consensus base differs from consensus
-            if cons_base!="-":
-                # cons_base might be "N" if most_common_fw was different from most_common_rv,
-                # or if the total % was not over thresh_all
-                # Note that thresh_all is less than 50%, and might be good to use a more stringent threshold for GT=1/1
-                counter_all = collections.Counter(bases_fw + bases_rv)
-                alt_base, freq_alt = counter_all.most_common(1)[0]
-                prop_alt = float(freq_alt)/len(bases_fw + bases_rv)
-                # how many of the fw and rv read groups contain the ref and alt bases?
-                srf = sum( np.array(freq_mx_fw)[:, base_mapping[alt_base]] == 0 )
-                srr = sum( np.array(freq_mx_rv)[:, base_mapping[alt_base]] == 0 )
-                saf = sum( np.array(freq_mx_fw)[:, base_mapping[alt_base]] > 0 )
-                sar = sum( np.array(freq_mx_rv)[:, base_mapping[alt_base]] > 0 )
-                if prop_alt > 0.8:
-                    add_to_vcf(chrom=ref_name, pos=pos, id=next_id, ref=ref_base, alt=alt_base, qual=".",
-                               info=[len(bases_fw + bases_rv), prop_alt],
-                               strand_counts=[srf,srr,saf,sar], gt="1/1", filehandle=vcf_handle)
-                    next_id += 1
-                else:
-                    add_to_vcf(chrom=ref_name, pos=pos, id=next_id, ref=ref_base, alt=alt_base, qual=0,
-                               info=[len(bases_fw + bases_rv), prop_alt],
-                               strand_counts=[srf,srr,saf,sar], gt = "0/1", filehandle=vcf_handle)
-                    next_id += 1
-
-        # Want to be lenient in initial vcf output, can filter later, but for now include all sites that had
-        # evidence of polymorphism when considering either strand set.
-        elif polymorphic_potential_fw or polymorphic_potential_rv:
+        # option to be lenient in initial vcf output (note the 'or') - can filter later
+        if polymorphic_potential_fw or polymorphic_potential_rv:
             # note that polymorphic_potential can only be true if cons_base!="-"
             # we will define the alt base as the most common base that is not the reference base
+            # these next few lines should be identical to those used to detect strand specificity for correction
             counter_all = collections.Counter(bases_fw + bases_rv)
             top_two = counter_all.most_common(2)
             if cons_base=="N":
@@ -236,11 +242,25 @@ def correct_from_pileup(bam_file_name, thresh_all, thresh_read, ref_seq, ref_nam
             else:
                 alt_base, freq_alt = top_two[0]
 
-            prop_alt = float(freq_alt) / len(bases_fw + bases_rv)
+            corrected_bases = [seq[pos] for seq in corrected_seqs]
+            corrected_counter = collections.Counter(corrected_bases)
+            AO = corrected_counter[alt_base]
+            DP = corrected_counter["A"] + corrected_counter["C"] + corrected_counter["G"] + corrected_counter["T"]
+            if DP > 0:
+                prop_alt = float(AO)/float(DP)
+            else:
+                prop_alt = 0.0
+
             srf = sum(np.array(freq_mx_fw)[:, base_mapping[alt_base]] == 0)
             srr = sum(np.array(freq_mx_rv)[:, base_mapping[alt_base]] == 0)
             saf = sum(np.array(freq_mx_fw)[:, base_mapping[alt_base]] > 0)
             sar = sum(np.array(freq_mx_rv)[:, base_mapping[alt_base]] > 0)
+            try:
+                chi2, p_val, dof, ex = scipy.stats.chi2_contingency([[srf, srr],
+                                                                     [saf, sar]])
+            except ValueError:  # this is due to zero expected frequency
+                p_val = ""
+
             # calculate phred based qual score, based on -10log_10 prob(call in ALT is wrong)
             if fw_p_val > 0 and rv_p_val > 0:
                 qual = -10 * np.log10(fw_p_val * rv_p_val)
@@ -249,16 +269,20 @@ def correct_from_pileup(bam_file_name, thresh_all, thresh_read, ref_seq, ref_nam
             elif rv_p_val > 0:
                 qual = -10 * np.log10(rv_p_val)
             elif fw_p_val == 0 or rv_p_val == 0:
-                # set an (arbirary) high qual score
+                # set an (arbirary) high qual score. NB: I don't think this ever happens.
                 qual = 100
             else:
                 # not enough data to assess polymorphic potential based on distribution across read groups
                 qual = "."
 
-            add_to_vcf(chrom=ref_name, pos=pos, id=next_id, ref=working_ref, alt=alt_base, qual=qual,
-                       info=[len(bases_fw + bases_rv), prop_alt],
-                       strand_counts=[srf, srr, saf, sar], gt="0/1", filehandle=vcf_handle)
-            next_id += 1
+            # This if clause makes sure only the variants in Supp Table 3 are output. Remove if want to ouput more
+            # note that not necessary to add strand bias to if clause assuming that sequences have been corrected
+            # with strand bias as a criterion - only concatemer-corrected sites will have prop_alt > 0.
+            if fw_p_val < 0.01 and rv_p_val < 0.01 and prop_alt > 0.1:
+                add_to_vcf(chrom=ref_name, pos=pos, id=next_id, ref=working_ref, alt=alt_base, qual=qual,
+                           info=[len(bases_fw + bases_rv), prop_alt],
+                           strand_counts=[srf, srr, saf, sar], p_val=p_val, gt="0/1", filehandle=vcf_handle)
+                next_id += 1
 
 
     return "".join(cons_seq), corrected_seqs, unique_RGs

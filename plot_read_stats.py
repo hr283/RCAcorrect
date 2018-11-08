@@ -10,7 +10,7 @@ from pandas import DataFrame
 import matplotlib.patches as mpatches
 
 """
-This script was used to make the read vs template length plot in Figure 4.
+This script was used to make the read vs template length plot in Figure 3.
 """
 
 def get_data_frame(bam_file_name, genome_length):
