@@ -9,7 +9,8 @@
 # (2) For each full length read: Find this anchor within the read using blast
 # (3)   Chop up read based on anchor locations -> create fastq for this read
 # (4)   Align these reads to (single) reference genome
-# (5)   Output corrected consensus
+# (5)   Correct sequences and write corrected consensus to fasta file
+# (6) Filter corrected reads to remove those with dual stand mappings or excessive gaps
 
 # Requires blast, bwa, samtools
 BWA_PATH=/apps/well/bwa/0.7.12/bwa
@@ -19,26 +20,28 @@ set -e
 set -x
 
 # Arguments to command line -
-# (1) minion run id path in form "path_to_run/<MNname>_<date>_<FC>_<MN_ID>_sequencing_run_<runID>_<sample>_<num>"
-# (2) workspace, where output directory will be created. Also where the python scripts are assumed to be located.
-# (3) path to genotype reference fasta
-RUN_ID_PATH=$( echo $@ | awk '{print $1}' )
-WORKSPACE=$( echo $@ | awk '{print $2}' )
-REFPATH=$( echo $@ | awk '{print $3}' )
+# (1) workspace, where output directory will be created. Also where the python scripts are assumed to be located.
+# must be the same as that given to select_full_reads.sh
+# (2) path to genotype reference fasta (single copy)
+# (3) patient/sample ID. e.g. 31, 32, 1348RCA
+# must be the same as that given to select_full_reads.sh
+# (4) correction/consensus type. Should be one of 'consensus_only' (simple within-concatamer consensus) and 'error_correct'
+# (involves detection and correction of repeated Nanopore errors).
+WORKSPACE=$( echo $@ | awk '{print $1}' )
+REFPATH=$( echo $@ | awk '{print $2}' )
+pID=$( echo $@ | awk '{print $3}')
+CORRECT_TYPE=$( echo $@ | awk '{print $4}' )
 
-RUN_ID=$(basename $RUN_ID_PATH)
-pID=$(echo $RUN_ID | awk -F"_" '{print $8}')
-minionID=$(echo $RUN_ID | awk -F"_" '{print $1}')
-NEW_FASTQ_DIR=$WORKSPACE/p${pID}/full_len_fastqs_3200
-NEW_FASTA_DIR=$WORKSPACE/p${pID}/full_len_fastas_3200
+NEW_FASTQ_DIR=${WORKSPACE}/p${pID}/full_len_fastqs_3200
+NEW_FASTA_DIR=${WORKSPACE}/p${pID}/full_len_fastas_3200
 
-cd $WORKSPACE
-mkdir -p $NEW_FASTQ_DIR
-mkdir -p $NEW_FASTA_DIR
+cd ${WORKSPACE}
+mkdir -p ${NEW_FASTQ_DIR}
+mkdir -p ${NEW_FASTA_DIR}
 
 # These files are produced by select_full_reads.sh
-FASTQ_FILTERED=$WORKSPACE/p${pID}/${minionID}_${pID}_pass-trimmed-3200-E.fastq
-READ_INFO=$WORKSPACE/p${pID}/full_length_reads_3200.txt
+FASTQ_FILTERED=${WORKSPACE}/p${pID}/${pID}_pass-trimmed-3200.fastq
+READ_INFO=${WORKSPACE}/p${pID}/full_length_reads_3200.txt
 
 # Step (1) Select first 100 bases of reference sequence (assumes reference sequence is single-line not multi-line fasta)
 ANCHOR=$( awk 'NR==2{print $1}' $REFPATH | cut -c1-100 )
@@ -125,8 +128,9 @@ else
 fi
 
 # Step (4) Re-align fastqs to single-copy reference
-FASTA_CORRECTED=$WORKSPACE/p${pID}/${minionID}_${pID}_pass-corrected.fasta
+FASTA_CORRECTED=$WORKSPACE/p${pID}/${pID}_pass-corrected.fasta
 BAMS_PER_READ=$WORKSPACE/p${pID}/bams_per_read
+VCF_OUT=$WORKSPACE/p${pID}/variants.vcf
 mkdir -p $BAMS_PER_READ
 
 module load python/2.7.11
@@ -152,10 +156,11 @@ for r in $( ls $BAMS_PER_READ/*.bam ); do echo $r >> $BAMS_PER_READ/all_bam_name
 $SAMTOOLS_PATH merge -b $BAMS_PER_READ/all_bam_names.txt -r $BAMS_PER_READ/all.bam
 $SAMTOOLS_PATH index $BAMS_PER_READ/all.bam
 
-python correct_by_consensus.py $BAMS_PER_READ/all.bam $FASTA_CORRECTED
+python correct_by_consensus.py $BAMS_PER_READ/all.bam $REFPATH $FASTA_CORRECTED $VCF_OUT --cons_type $CORRECT_TYPE
 
+# Step (6) Filter corrected reads to remove those with dual stand mappings or excessive gaps
 REF_NAME=$( grep -m 1 '>' $REFPATH | cut -c2- )
-FASTA_FILTERED=$WORKSPACE/p${pID}/${minionID}_${pID}_pass-corrected-filtered.fasta
+FASTA_FILTERED=$WORKSPACE/p${pID}/${pID}_pass-corrected-filtered.fasta
 python filter_corrected_reads.py $BAMS_PER_READ/all.bam $FASTA_CORRECTED $FASTA_FILTERED $REF_NAME
 
 deactivate

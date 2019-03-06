@@ -151,7 +151,7 @@ if __name__ == "__main__":
         for row in zip(*columns):
             print(",".join([str(val) for val in row]), file=out)
 
-# python compare_variation.py ~/Dropbox/Nanopore/HBV/final_consensus_sequences.fasta p1331_RCA_Illumina_consensus1 --Illumina_bam ~/Dropbox/Nanopore/HBV/bams/P31_rep1_bwa.bam --Nanopore_fasta ~/Dropbox/Nanopore/HBV/corrected_fastas/p1331_corrected_filtered.fasta >~/Dropbox/Nanopore/HBV/p1331_variant_comparison_new.txt
+# python compare_variation.py ~/Dropbox/Nanopore/HBV/final_consensus_sequences.fasta p1331_RCA_Illumina_consensus1 --Illumina_bam ~/Dropbox/Nanopore/HBV/bams/P31_rep1_bwa.bam --Nanopore_fasta ~/Dropbox/Nanopore/HBV/corrected_fastas/p1331_corrected_filtered.fasta ~/Dropbox/Nanopore/HBV/p1331_variant_comparison_new.txt
 # change in error rate with reps per read cutoff for 1331. Above command gives 98.0% (5 reps) accuracy
 # 4reps: 97.9 %
 # 5reps: 98.0 %

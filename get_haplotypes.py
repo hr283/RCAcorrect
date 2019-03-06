@@ -8,7 +8,6 @@ def select_variant_sites(fasta_name, sites, fasta_out):
     for record in SeqIO.parse(fasta_name, "fasta"):
 
         # Some of the sequences do not cover the extreme ends of the reference - treat as missing rather than deletion
-        # this needs editing so that only unique site combinations are printed
         raw_seq = list(record.seq)
         select_sites = "".join([raw_seq[site] for site in sites])
         combinations.append(select_sites)

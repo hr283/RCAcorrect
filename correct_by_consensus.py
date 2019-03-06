@@ -193,9 +193,6 @@ def correct_from_pileup(bam_file_name, thresh_all, thresh_read, ref_seq, ref_nam
 
             # correct sites as 'variants' if there is strong concatamer-association in both plus and minus strand data,
             # and if there is NOT strand specificity at a significance level of p <0.01
-            # I am not sure what level to choose here for concatemer association - we could go for very stringent,
-            # knowing that it works because of our post-hoc analysis. But it would be nice to show that a sensibly
-            # chosen p-value works (i.e. we would have been able to produce good results w/o seeing Illumina data!
             if fw_p_val < 0.01 and rv_p_val < 0.01 and strand_bias_pass:
                 print("variant at site ", pos)
                 for seqi, read_group in enumerate(RG_rv_set):
