@@ -1,5 +1,5 @@
 #!/bin/bash
-#$ -P lunter.prjc
+#$ -P bsg.prjc
 #$ -S /bin/bash
 #$ -q short.qc
 #$ -cwd
@@ -31,6 +31,7 @@ RUN_ID=$(basename $RUN_ID_PATH)
 BWA_PATH=/apps/well/bwa/0.7.12/bwa
 SAMTOOLS_PATH=/apps/well/samtools/1.4.1/bin/samtools
 PORECHOP_VENV=/well/ont/apps/porechop/virtualenvs/python3.5.2-gcc5.4.0/porechop-0.2.3/bin/activate
+PYSAM_VENV=~/hbv_py/bin/activate # the scripts used in this venv are compatible with python 2.7.11
 
 cd $WORKSPACE
 mkdir -p p$pID
@@ -62,8 +63,7 @@ $SAMTOOLS_PATH index $BAM_FILE_PATH
 
 # Step (3) Use pysam to detect reads with full length mappings
 # Extract these from the trimmed fastq and make a new fastq with just these reads
-module load python/2.7.11
-source ~/hbv_py/bin/activate
+source $PYSAM_VENV
 
 BAM_PRIMARY=${WORKSPACE}/p${pID}/${pID}_pass-trimmed-primary.bam
 $SAMTOOLS_PATH view -b $BAM_FILE_PATH -F 0x904 > $BAM_PRIMARY

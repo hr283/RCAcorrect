@@ -10,6 +10,8 @@ Trimmed reads are then mapped with bwa-mem, and pysam is used to select reads wi
 Inputs are:\
 `./select_full_reads.sh $RUN_ID_PATH $OUTPUT_DIRECTORY $REFERENCE_FASTA $SAMPLE_ID`
 
+where the reference sequence should be two concatenated copies of the relevant genotype reference sequence.
+
 Then run `chop_and_correct_RCA.sh` \
 The steps carried out in this script are as follows:
 (1) Select 100bp anchor at start of reference genome \
@@ -24,4 +26,7 @@ Inputs are:\
 
 The output directory and sample ID should be the same as that given to select_full_reads.sh. The reference should in this case be a single copy genotype reference.
 Correction type should be one of consensus_only or error_correct.
+
+Paths to relevant software are found near the top of each bash script and need to be appropriately modified before use.
+The scripts also use two python virtualenvs, `$PORECHOP_VENV`, in which porechop 0.2.3 is installed, and `$PYSAM_VENV`, the requirements for which can be found in `pysam_venv_requirements.txt`.
 

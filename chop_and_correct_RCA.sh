@@ -1,5 +1,5 @@
 #!/bin/bash
-#$ -P lunter.prjc
+#$ -P bsg.prjc
 #$ -S /bin/bash
 #$ -q short.qc
 #$ -cwd
@@ -15,6 +15,8 @@
 # Requires blast, bwa, samtools
 BWA_PATH=/apps/well/bwa/0.7.12/bwa
 SAMTOOLS_PATH=/apps/well/samtools/1.4.1/bin/samtools
+BLAST_PATH=/apps/well/ncbi-blast+/2.6.0/bin/
+PYSAM_VENV=~/hbv_py/bin/activate
 
 set -e
 set -x
@@ -52,12 +54,11 @@ RC_ANCHOR=$( echo $ANCHOR | rev | tr "ATGC" "TACG" )
 RC_ANCHOR_FASTA=${WORKSPACE}/p${pID}/splitting_anchor_rc.fa
 printf "%s\n" ">rc_anchor" $RC_ANCHOR > $RC_ANCHOR_FASTA
 
-TMP_BLAST_DIR=${WORKSPACE}/p${pID}/tmp_blast4correct
-mkdir -p $TMP_BLAST_DIR
-
 # Steps (2) and (3)
 BLAST_RESULTS=${WORKSPACE}/p${pID}/blast_chop_results_3200.txt
 if [[ ! -e ${BLAST_RESULTS} ]]; then
+  TMP_BLAST_DIR=${WORKSPACE}/p${pID}/tmp_blast4correct
+  mkdir -p $TMP_BLAST_DIR
   while read -r firstline; do
     read_name=$( echo $firstline | awk '{print $1}' | cut -c2- )
     read -r sequence
@@ -77,8 +78,8 @@ if [[ ! -e ${BLAST_RESULTS} ]]; then
     fi   
 
     # make blast db and blast anchor against read sequence
-    /apps/well/ncbi-blast+/2.6.0/bin/makeblastdb -dbtype nucl -in $read_fasta -out $TMP_BLAST_DIR/${read_name}_db
-    /apps/well/ncbi-blast+/2.6.0/bin/blastn -outfmt "6 sseqid pident evalue length sstart send bitscore" \
+    ${BLAST_PATH}makeblastdb -dbtype nucl -in $read_fasta -out $TMP_BLAST_DIR/${read_name}_db
+    ${BLAST_PATH}blastn -outfmt "6 sseqid pident evalue length sstart send bitscore" \
       -query $anchor_fa -db $TMP_BLAST_DIR/${read_name}_db -out $TMP_BLAST_DIR/${read_name}-blastout.txt \
       -reward 5 -penalty -4 -gapopen 8 -gapextend 6 -dust no
     sort -k5 -n $TMP_BLAST_DIR/${read_name}-blastout.txt > $TMP_BLAST_DIR/${read_name}-blastsort.txt
@@ -133,8 +134,7 @@ BAMS_PER_READ=$WORKSPACE/p${pID}/bams_per_read
 VCF_OUT=$WORKSPACE/p${pID}/variants.vcf
 mkdir -p $BAMS_PER_READ
 
-module load python/2.7.11
-source ~/hbv_py/bin/activate
+source $PYSAM_VENV
 
 for fastq in $( ls $NEW_FASTQ_DIR ); do
   fastq_len=$(wc -l $NEW_FASTQ_DIR/$fastq | awk '{print $1}')
