@@ -68,13 +68,10 @@ source ~/hbv_py/bin/activate
 BAM_PRIMARY=${WORKSPACE}/p${pID}/${pID}_pass-trimmed-primary.bam
 $SAMTOOLS_PATH view -b $BAM_FILE_PATH -F 0x904 > $BAM_PRIMARY
 $SAMTOOLS_PATH index $BAM_PRIMARY
-BAM_POS_FILE=${WORKSPACE}/p${pID}/$( basename $BAM_PRIMARY .bam )-positions.txt
-READ_LOG=${WORKSPACE}/p${pID}/log-read-selection.txt
 FULL_LEN_READS=${WORKSPACE}/p${pID}/full_length_reads_3200.txt
 FASTQ_FILTERED=${WORKSPACE}/p${pID}/${pID}_pass-trimmed-3200.fastq
 
-$SAMTOOLS_PATH view $BAM_PRIMARY | awk '{print $1 "\t" $2 "\t" $3 "\t" $4}' > $BAM_POS_FILE
-python select_full_reads.py $BAM_PRIMARY $BAM_POS_FILE $FULL_LEN_READS
+python select_full_reads.py $BAM_PRIMARY $FULL_LEN_READS
 python filter_fastq.py $FULL_LEN_READS $FASTQ_TRIMMED $FASTQ_FILTERED
 
 deactivate

@@ -69,7 +69,7 @@ if [[ ! -e ${BLAST_RESULTS} ]]; then
 
     # work out whether sequence is rc and choose correct anchor
     # need to add tab to read_name for cases where reads have been split by porechop
-    rc_flag=$( grep "${read_name} " $READ_INFO | awk '{print $4}' )
+    rc_flag=$( grep "${read_name} " $READ_INFO | awk '{print $3}' )
     if [ $rc_flag == "True" ]; then
       anchor_fa=$RC_ANCHOR_FASTA
     else

@@ -61,33 +61,22 @@ if __name__ == "__main__":
     hbv_length = 3200
     revcompl = lambda x: ''.join([{'A': 'T', 'C': 'G', 'G': 'C', 'T': 'A'}[B] for B in x][::-1])
 
-    # Get info on primary alignments from alignment positions
-    read_names, bam_flags, chromosomes, positions = primary_read_positions(args.bam_pos)
-    print(len(read_names))
 
     with pysam.AlignmentFile(args.bam, 'rb') as bamfile:
         with open(args.out, 'w') as outfile:
             # For each primary alignment, use pysam to get aligned length of the read on the reference genome
             # Print details of full length reads to file
-            # This method is not particularly efficient - better suited to large genomes with low coverage.
-            for i, read_name in enumerate(read_names):
-                bam_iter = bamfile.fetch(chromosomes[i], positions[i], positions[i] + 1)
-                for read in bam_iter:
-                    if read.query_name == read_name:
-                        length = read.reference_length
-                        if length >= hbv_length:
-                            print("Read {} full length".format(read_name))
-                            if bam_flags[i] & 16:
-                                revcompl_flag=True
-                            else:
-                                revcompl_flag=False
-                            # This anchor is no longer used to split concatamers - could be removed
-                            seq_anchor = get_sequence_anchor(read.get_reference_sequence().upper(),
-                                                             revcompl_flag, revcompl)
-
-                            print(read_name, "\t", seq_anchor, "\t", length, "\t", revcompl_flag, file=outfile)
+            bam_iter = bamfile.fetch()
+            for read in bam_iter:
+                if not read.is_secondary: # this should also have been checked in the previous step of the pipeline
+                    length = read.reference_length
+                    if length >= hbv_length:
+                        if read.is_reverse:
+                            revcompl_flag=True
                         else:
-                            print("Read {} too short: {}".format(read_name, length))
+                            revcompl_flag=False
+
+                        print(read.query_name, "\t", length, "\t", revcompl_flag, file=outfile)
 
 
 
