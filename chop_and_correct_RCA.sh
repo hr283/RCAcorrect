@@ -35,11 +35,8 @@ pID=$( echo $@ | awk '{print $3}')
 CORRECT_TYPE=$( echo $@ | awk '{print $4}' )
 
 NEW_FASTQ_DIR=${WORKSPACE}/p${pID}/full_len_fastqs_3200
-NEW_FASTA_DIR=${WORKSPACE}/p${pID}/full_len_fastas_3200
 
 cd ${WORKSPACE}
-mkdir -p ${NEW_FASTQ_DIR}
-mkdir -p ${NEW_FASTA_DIR}
 
 # These files are produced by select_full_reads.sh
 FASTQ_FILTERED=${WORKSPACE}/p${pID}/${pID}_pass-trimmed-3200.fastq
@@ -57,6 +54,7 @@ printf "%s\n" ">rc_anchor" $RC_ANCHOR > $RC_ANCHOR_FASTA
 # Steps (2) and (3)
 BLAST_RESULTS=${WORKSPACE}/p${pID}/blast_chop_results_3200.txt
 if [[ ! -e ${BLAST_RESULTS} ]]; then
+  mkdir ${NEW_FASTQ_DIR} # Not -p, otherwise fastqs could end up with duplicate reads!!
   TMP_BLAST_DIR=${WORKSPACE}/p${pID}/tmp_blast4correct
   mkdir -p $TMP_BLAST_DIR
   while read -r firstline; do
@@ -102,7 +100,6 @@ if [[ ! -e ${BLAST_RESULTS} ]]; then
           this_sequence=$( echo $sequence | cut -c${new_start}-${new_end} )
           this_qscore=$( echo $qscores | cut -c${new_start}-${new_end} )
           printf "%s\n" "@"${read_name}-$new_start $this_sequence "+" $this_qscore >> $NEW_FASTQ_DIR/${read_name}-chop.fastq
-          printf "%s\n" ">"${read_name}-$new_start $this_sequence >> $NEW_FASTA_DIR/${read_name}-chop.fasta
           new_start=$new_end
         done
         prev_start=$new_start
@@ -110,7 +107,6 @@ if [[ ! -e ${BLAST_RESULTS} ]]; then
       this_sequence=$( echo $sequence | cut -c${prev_start}-${this_start} )
       this_qscore=$( echo $qscores | cut -c${prev_start}-${this_start} )
       printf "%s\n" "@"${read_name}-$prev_start $this_sequence "+" $this_qscore >> $NEW_FASTQ_DIR/${read_name}-chop.fastq
-      printf "%s\n" ">"${read_name}-$prev_start $this_sequence >> $NEW_FASTA_DIR/${read_name}-chop.fasta
       prev_start=$this_start
     done < $TMP_BLAST_DIR/${read_name}-blastsort.txt
 
@@ -118,15 +114,17 @@ if [[ ! -e ${BLAST_RESULTS} ]]; then
     this_sequence=$( echo $sequence | cut -c${prev_start}- )
     this_qscore=$( echo $qscores | cut -c${prev_start}- )
     printf "%s\n" "@"${read_name}-$prev_start $this_sequence "+" $this_qscore >> $NEW_FASTQ_DIR/${read_name}-chop.fastq
-    printf "%s\n" ">"${read_name}-$prev_start $this_sequence >> $NEW_FASTA_DIR/${read_name}-chop.fasta
     cat $TMP_BLAST_DIR/${read_name}-blastsort.txt >> $BLAST_RESULTS
-    if ((${short_section_count} > 1)); then rm $NEW_FASTQ_DIR/${read_name}-chop.fastq; rm $NEW_FASTA_DIR/${read_name}-chop.fasta; fi
+    if ((${short_section_count} > 1)); then rm $NEW_FASTQ_DIR/${read_name}-chop.fastq; fi
     rm $TMP_BLAST_DIR/${read_name}*
   done < $FASTQ_FILTERED
   rm -r $TMP_BLAST_DIR
 else
   echo "Not chopping reads; already done"
 fi
+
+# TODO: Before re-aligning, merge a selection of the fastqs and check for any structural differences between
+# reference and reads.
 
 # Step (4) Re-align fastqs to single-copy reference
 FASTA_CORRECTED=$WORKSPACE/p${pID}/${pID}_pass-corrected.fasta
@@ -152,8 +150,16 @@ done
 
 # Step (5) Correct reads
 # merge all the individual bams and add read group tag, for use in correcting by concatamer
-for r in $( ls $BAMS_PER_READ/*.bam ); do echo $r >> $BAMS_PER_READ/all_bam_names.txt ; done
-$SAMTOOLS_PATH merge -b $BAMS_PER_READ/all_bam_names.txt -r $BAMS_PER_READ/all.bam
+# attempt to avoid ulimit (for number of open files) being exceeded
+for char in 0 1 2 3 4 5 6 7 8 9 a b c d e f; do
+  printf '%s\n' $( find $BAMS_PER_READ -name ${char}*.bam ) > $BAMS_PER_READ/bam_names.txt
+  $SAMTOOLS_PATH merge -b $BAMS_PER_READ/bam_names.txt -r $BAMS_PER_READ/tmp-${char}.bam
+  $SAMTOOLS_PATH index $BAMS_PER_READ/tmp-${char}.bam
+done
+
+printf '%s\n' $( find $BAMS_PER_READ -name 'tmp*.bam' ) > $BAMS_PER_READ/bam_names.txt
+$SAMTOOLS_PATH merge -b $BAMS_PER_READ/bam_names.txt $BAMS_PER_READ/all.bam
+rm $BAMS_PER_READ/tmp*.bam
 $SAMTOOLS_PATH index $BAMS_PER_READ/all.bam
 
 python correct_by_consensus.py $BAMS_PER_READ/all.bam $REFPATH $FASTA_CORRECTED $VCF_OUT --cons_type $CORRECT_TYPE
