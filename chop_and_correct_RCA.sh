@@ -34,6 +34,11 @@ REFPATH=$( echo $@ | awk '{print $2}' )
 pID=$( echo $@ | awk '{print $3}')
 CORRECT_TYPE=$( echo $@ | awk '{print $4}' )
 
+REF_LEN=$( less $REFPATH | tail -n +2 | awk '{print length}' )
+short_len=$(( $REF_LEN - ${REF_LEN}/10 ))
+max_gap_len=$(( 2*${REF_LEN} - ${REF_LEN}/10 ))
+
+
 NEW_FASTQ_DIR=${WORKSPACE}/p${pID}/full_len_fastqs_3200
 
 cd ${WORKSPACE}
@@ -88,14 +93,14 @@ if [[ ! -e ${BLAST_RESULTS} ]]; then
     while read blast_line; do
       this_start=$( echo $blast_line | awk '{print $5}' )
       gap=$(( ${this_start} - ${prev_start} ))
-      if (( $gap < 2900 )); then short_section_count=$(( $short_section_count + 1 )); fi
+      if (( $gap < $short_len )); then short_section_count=$(( $short_section_count + 1 )); fi
       # If there has been a big gap since the last chop, further chop this section into equal length intervals
       # This logic assumes that big gaps are of approximate size 6000, 9000, 12000, etc. (i.e. whole genome multiples)
-      if (( $gap > 6000 )); then 
-        rep=$(( $gap / 2900 )) 
+      if (( $gap > $max_gap_len )); then
+        rep=$(( $gap / $short_len ))
         interval=$(( $gap / $rep ))
         new_start=${prev_start}
-        while ((${new_start} < $((${this_start} - 5800)))); do
+        while ((${new_start} < $((${this_start} - ${short_len} * 2)))); do
           new_end=$(($new_start + $interval))
           this_sequence=$( echo $sequence | cut -c${new_start}-${new_end} )
           this_qscore=$( echo $qscores | cut -c${new_start}-${new_end} )
@@ -111,8 +116,8 @@ if [[ ! -e ${BLAST_RESULTS} ]]; then
     done < $TMP_BLAST_DIR/${read_name}-blastsort.txt
 
     # print the last sections to file
-    this_sequence=$( echo $sequence | cut -c${prev_start}- )
-    this_qscore=$( echo $qscores | cut -c${prev_start}- )
+    this_sequence=$( echo $sequence | cut -c${prev_start}-$((${prev_start} + ${REF_LEN})) )
+    this_qscore=$( echo $qscores | cut -c${prev_start}-$((${prev_start} + ${REF_LEN})) )
     printf "%s\n" "@"${read_name}-$prev_start $this_sequence "+" $this_qscore >> $NEW_FASTQ_DIR/${read_name}-chop.fastq
     cat $TMP_BLAST_DIR/${read_name}-blastsort.txt >> $BLAST_RESULTS
     if ((${short_section_count} > 1)); then rm $NEW_FASTQ_DIR/${read_name}-chop.fastq; fi
@@ -123,48 +128,49 @@ else
   echo "Not chopping reads; already done"
 fi
 
-# TODO: Before re-aligning, merge a selection of the fastqs and check for any structural differences between
-# reference and reads.
-
 # Step (4) Re-align fastqs to single-copy reference
 FASTA_CORRECTED=$WORKSPACE/p${pID}/${pID}_pass-corrected.fasta
 BAMS_PER_READ=$WORKSPACE/p${pID}/bams_per_read
 VCF_OUT=$WORKSPACE/p${pID}/variants.vcf
 mkdir -p $BAMS_PER_READ
 
-source $PYSAM_VENV
+if [[ ! -e $BAMS_PER_READ/all.bam ]]; then
 
-for fastq in $( ls $NEW_FASTQ_DIR ); do
-  fastq_len=$(wc -l $NEW_FASTQ_DIR/$fastq | awk '{print $1}')
-  # want to just correct reads for which there are at least 5 concatenated (partial + full) copies of the genome
-  # This corresponds to at least 3 full (or near-full) copies of the genome
-  if [ "$fastq_len" -ge "20" ]; then
-    $BWA_PATH mem -x ont2d -R "@RG\tID:1\tSM:HBV" -M \
-      $REFPATH \
-      $NEW_FASTQ_DIR/$fastq \
-      | $SAMTOOLS_PATH view -bS - \
-      | $SAMTOOLS_PATH sort -o $BAMS_PER_READ/$( basename $fastq .fastq ).bam -
-    $SAMTOOLS_PATH index $BAMS_PER_READ/$( basename $fastq .fastq ).bam
-  fi
-done    
+  source $PYSAM_VENV
 
-# Step (5) Correct reads
-# merge all the individual bams and add read group tag, for use in correcting by concatamer
-# attempt to avoid ulimit (for number of open files) being exceeded
-for char in 0 1 2 3 4 5 6 7 8 9 a b c d e f; do
-  printf '%s\n' $( find $BAMS_PER_READ -name ${char}*.bam ) > $BAMS_PER_READ/bam_names.txt
-  $SAMTOOLS_PATH merge -b $BAMS_PER_READ/bam_names.txt -r $BAMS_PER_READ/tmp-${char}.bam
-  $SAMTOOLS_PATH index $BAMS_PER_READ/tmp-${char}.bam
-done
+  for fastq in $( ls $NEW_FASTQ_DIR ); do
+    fastq_len=$(wc -l $NEW_FASTQ_DIR/$fastq | awk '{print $1}')
+    # want to just correct reads for which there are at least 5 concatenated (partial + full) copies of the genome
+    # This corresponds to at least 3 full (or near-full) copies of the genome
+    if [ "$fastq_len" -ge "20" ]; then
+      $BWA_PATH mem -x ont2d -R "@RG\tID:1\tSM:HBV" -M \
+        $REFPATH \
+        $NEW_FASTQ_DIR/$fastq \
+        | $SAMTOOLS_PATH view -bS - \
+        | $SAMTOOLS_PATH sort -o $BAMS_PER_READ/$( basename $fastq .fastq ).bam -
+      $SAMTOOLS_PATH index $BAMS_PER_READ/$( basename $fastq .fastq ).bam
+    fi
+  done
 
-printf '%s\n' $( find $BAMS_PER_READ -name 'tmp*.bam' ) > $BAMS_PER_READ/bam_names.txt
-$SAMTOOLS_PATH merge -b $BAMS_PER_READ/bam_names.txt $BAMS_PER_READ/all.bam
-rm $BAMS_PER_READ/tmp*.bam
-$SAMTOOLS_PATH index $BAMS_PER_READ/all.bam
+  # Step (5) Correct reads
+  # merge all the individual bams and add read group tag, for use in correcting by concatamer
+  # attempt to avoid ulimit (for number of open files) being exceeded
+  for char in 0 1 2 3 4 5 6 7 8 9 a b c d e f; do
+    printf '%s\n' $( find $BAMS_PER_READ -name ${char}*.bam ) > $BAMS_PER_READ/bam_names.txt
+    $SAMTOOLS_PATH merge -b $BAMS_PER_READ/bam_names.txt -r $BAMS_PER_READ/tmp-${char}.bam
+    $SAMTOOLS_PATH index $BAMS_PER_READ/tmp-${char}.bam
+  done
+
+  printf '%s\n' $( find $BAMS_PER_READ -name 'tmp*.bam' ) > $BAMS_PER_READ/bam_names.txt
+  $SAMTOOLS_PATH merge -b $BAMS_PER_READ/bam_names.txt $BAMS_PER_READ/all.bam
+  rm $BAMS_PER_READ/tmp*.bam
+  $SAMTOOLS_PATH index $BAMS_PER_READ/all.bam
+fi
 
 python correct_by_consensus.py $BAMS_PER_READ/all.bam $REFPATH $FASTA_CORRECTED $VCF_OUT --cons_type $CORRECT_TYPE
 
 # Step (6) Filter corrected reads to remove those with dual stand mappings or excessive gaps
+# This will throw an error if ref_name is not a single word.
 REF_NAME=$( grep -m 1 '>' $REFPATH | cut -c2- )
 FASTA_FILTERED=$WORKSPACE/p${pID}/${pID}_pass-corrected-filtered.fasta
 python filter_corrected_reads.py $BAMS_PER_READ/all.bam $FASTA_CORRECTED $FASTA_FILTERED $REF_NAME

@@ -36,30 +36,32 @@ PYSAM_VENV=~/hbv_py/bin/activate # the scripts used in this venv are compatible 
 cd $WORKSPACE
 mkdir -p p$pID
 
-# Make concatenated Fastq from those in 'pass' directory. Note assumed minion run directory structure
-FASTQ=$WORKSPACE/p${pID}/${pID}_pass.fastq
-cat $( ls $RUN_ID_PATH/fastq/pass/* ) > $FASTQ
-
-# Step (1) Trim reads with Porechop.
-# Substitute with own porechop virtualenv.
-source $PORECHOP_VENV
-
-FASTQ_TRIMMED=$WORKSPACE/p${pID}/${pID}_pass-trimmed.fastq
-LOG_TRIMMED=$WORKSPACE/p${pID}/log-trimmed.txt
-porechop -i $FASTQ -o $FASTQ_TRIMMED --format fastq --verbosity 1 -t 1 > $LOG_TRIMMED
-
-deactivate
-
-# Step (2) Map with bwa mem
 BAM_FILE_PATH=${WORKSPACE}/p${pID}/${pID}_pass-trimmed.bam
+if [[ ! -e ${BAM_FILE_PATH} ]]; then
+  # Make concatenated Fastq from those in 'pass' directory. Note assumed minion run directory structure
+  FASTQ=$WORKSPACE/p${pID}/${pID}_pass.fastq
+  cat $( ls $RUN_ID_PATH/fastq/pass/* ) > $FASTQ
 
-$BWA_PATH mem -x ont2d -R "@RG\tID:1\tSM:HBV" -M \
-  $REFPATH \
-  $FASTQ_TRIMMED \
-  | $SAMTOOLS_PATH view -bS - \
-  | $SAMTOOLS_PATH sort -o $BAM_FILE_PATH -
+  # Step (1) Trim reads with Porechop.
+  # Substitute with own porechop virtualenv.
+  source $PORECHOP_VENV
 
-$SAMTOOLS_PATH index $BAM_FILE_PATH
+  FASTQ_TRIMMED=$WORKSPACE/p${pID}/${pID}_pass-trimmed.fastq
+  LOG_TRIMMED=$WORKSPACE/p${pID}/log-trimmed.txt
+  porechop -i $FASTQ -o $FASTQ_TRIMMED --format fastq --verbosity 1 -t 1 > $LOG_TRIMMED
+
+  deactivate
+
+  # Step (2) Map with bwa mem
+
+  $BWA_PATH mem -x ont2d -R "@RG\tID:1\tSM:HBV" -M \
+    $REFPATH \
+    $FASTQ_TRIMMED \
+    | $SAMTOOLS_PATH view -bS - \
+    | $SAMTOOLS_PATH sort -o $BAM_FILE_PATH -
+
+  $SAMTOOLS_PATH index $BAM_FILE_PATH
+fi
 
 # Step (3) Use pysam to detect reads with full length mappings
 # Extract these from the trimmed fastq and make a new fastq with just these reads

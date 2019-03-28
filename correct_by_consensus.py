@@ -5,6 +5,7 @@ import collections
 import numpy as np
 import datetime
 import scipy
+import random
 from FisherExact import fisher_exact
 from Bio import SeqIO
 
@@ -14,8 +15,8 @@ def print_vcf_header(ref_name, ref_len, bam_path, vcf_handle):
                   "##source=correct_by_consensus.py",
                   "##fileDate={:%d-%m-%Y}".format(datetime.date.today()),
                   "##contig=<ID={},length={}>".format(ref_name, ref_len),
-                  "##INFO=<ID=DP,Number=1,Type=Integer,Description=\"Depth of coverage at this position\">",
-                  "##INFO=<ID=AF,Number=1,Type=Float,Description=\"Observations of the alternate allele on individual reads as a proportion of total coverage\">",
+                  "##INFO=<ID=DP,Number=1,Type=Integer,Description=\"Depth of coverage at this position, in terms of number of corrected concatemers\">",
+                  "##INFO=<ID=AF,Number=1,Type=Float,Description=\"Observations of the alternate allele on corrected concatemers as a proportion of DP\">",
                   "##INFO=<ID=SRF,Number=1,Type=Integer,Description=\"Number of forward strand concatamers without alternate allele observations\">",
                   "##INFO=<ID=SRR,Number=1,Type=Integer,Description=\"Number of reverse strand concatamers without alternate allele observations\">",
                   "##INFO=<ID=SAF,Number=A,Type=Integer,Description=\"Number of alternate observations in forward strand concatamers\">",
@@ -103,10 +104,11 @@ def correct_from_pileup(bam_file_name, thresh_all, thresh_read, ref_seq, ref_nam
                 cons_base="N"
 
         cons_seq[pos] = cons_base
-        print(pos, cons_base)
 
         # Next, see if there is any evidence for polymorphism in reads - any non-consensus base at > thresh_read
         # in a read group with read depth > 1 at that position
+        # The main reason for adding this step is to not have to perform fisher's exact test on every site, but to
+        # do some initial quick filtering to remove sites with no good evidence of variation
         RG_fw_set = list(set(RG_fw))
         RG_rv_set = list(set(RG_rv))
         polymorphic_potential_fw = False
@@ -148,9 +150,20 @@ def correct_from_pileup(bam_file_name, thresh_all, thresh_read, ref_seq, ref_nam
             freq_mx_rv.append(RG_freq)
 
         if polymorphic_potential_fw and polymorphic_potential_rv:
-            print("polymorphism tests")
+            # for large data sets the fisher_exact test is time consuming
+            # if there are more than 200 fw or rv reads then subset first
+            # NB: remove this subsetting if you want to detect low frequency variants (~1% and less)
+            if len(freq_mx_fw) > 200:
+                freq_mx_fw_subset = random.sample(freq_mx_fw, 200)
+            else:
+                freq_mx_fw_subset = freq_mx_fw
+            if len(freq_mx_rv) > 200:
+                freq_mx_rv_subset = random.sample(freq_mx_rv, 200)
+            else:
+                freq_mx_rv_subset = freq_mx_rv
+
             try:
-                fw_p_val = fisher_exact(freq_mx_fw, simulate_pval=True)
+                fw_p_val = fisher_exact(freq_mx_fw_subset, simulate_pval=True)
             except ValueError:
                 # ValueError will be raised if less than 2 non-zero columns or rows
                 # i.e if all reads have the same base call, or if there is only one read group with coverage here
@@ -158,7 +171,7 @@ def correct_from_pileup(bam_file_name, thresh_all, thresh_read, ref_seq, ref_nam
                 fw_p_val = None
 
             try:
-                rv_p_val = fisher_exact(freq_mx_rv, simulate_pval=True)
+                rv_p_val = fisher_exact(freq_mx_rv_subset, simulate_pval=True)
             except ValueError:
                 rv_p_val = None
 

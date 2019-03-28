@@ -12,7 +12,6 @@ More specifically, the script measures the length of the reference section that 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('bam', type=str, help="path to bamfile")
-    parser.add_argument('bam_pos', type=str, help="bam positions file")
     parser.add_argument('out', type=str, help="path to output file")
     args = parser.parse_args()
 
