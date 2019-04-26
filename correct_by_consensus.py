@@ -285,7 +285,7 @@ def correct_from_pileup(bam_file_name, thresh_all, thresh_read, ref_seq, ref_nam
                 # not enough data to assess polymorphic potential based on distribution across read groups
                 qual = "."
 
-            # This if clause makes sure only the variants in Supp Table 3 are output. Remove if want to ouput more
+            # This if clause makes sure only the variants in Supp Table 3 are output. Remove if want to output more
             # note that not necessary to add strand bias to if clause assuming that sequences have been corrected
             # with strand bias as a criterion - only concatemer-corrected sites will have prop_alt > 0.
             if fw_p_val < 0.01 and rv_p_val < 0.01 and prop_alt > 0.1:

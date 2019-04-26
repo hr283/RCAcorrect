@@ -105,7 +105,7 @@ def get_nanopore_variation(fasta_name, consensus, variable_positions=None):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('consensuses', type=str, help="Path to corrected consensuses")
+    parser.add_argument('consensuses', type=str, help="Path to whole sample consensus seqs")
     parser.add_argument('consensus_name', type=str, help="Name of consensus to use as truth")
     parser.add_argument('output_file', type=str, help="Path to output data file")
     parser.add_argument('--Illumina_bam1', type=str, help="path to bamfile with Illumina RCA data", default=None)
@@ -151,11 +151,4 @@ if __name__ == "__main__":
         for row in zip(*columns):
             print(",".join([str(val) for val in row]), file=out)
 
-# python compare_variation.py ~/Dropbox/Nanopore/HBV/final_consensus_sequences.fasta p1331_RCA_Illumina_consensus1 --Illumina_bam ~/Dropbox/Nanopore/HBV/bams/P31_rep1_bwa.bam --Nanopore_fasta ~/Dropbox/Nanopore/HBV/corrected_fastas/p1331_corrected_filtered.fasta ~/Dropbox/Nanopore/HBV/p1331_variant_comparison_new.txt
-# change in error rate with reps per read cutoff for 1331. Above command gives 98.0% (5 reps) accuracy
-# 4reps: 97.9 %
-# 5reps: 98.0 %
-# 6reps: 98.2 %
-# 8reps: 98.3 %
-# 10reps: 98.5 %
-# Number of reads: 276, 208, 158, 84, 41
+# Run with, e.g.: python compare_variation.py $TRUE_PATIENT_CONSENSUS $PATIENT_CONSENSUS_NAME --Illumina_bam1 $ILLUMINA_BAM_PATH --Nanopore_fasta $NANOPORE_CORRECTED_FASTA $OUTPUT_PATH

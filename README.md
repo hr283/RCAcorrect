@@ -1,19 +1,22 @@
 # RCAcorrect
 
 The starting point for this pipeline is fastqs containing basecalled ONT reads.
-It is assumed that the genotype of the sample has already been determined and a concatenated (two-copy) reference sequence has been created for that genotype reference.
+It is assumed that the genotype of the sample has already been determined and a concatenated (two-copy) reference sequence has been created for that genotype
+as well as a single-copy reference sequence.
 
-First run `select_full_reads.sh `\
+First, run `select_full_reads.sh `\
 This looks for fastqs in $RUN_ID_PATH/fastq/pass, concatenates them into a single fastq and then trims adapters using porechop. 
-Trimmed reads are then mapped with bwa-mem, and pysam is used to select reads with full-length mappings (of 3.2kb or more)
+Trimmed reads are then mapped with bwa-mem, and pysam is used to select reads with full-length mappings (of 3.2kb or more).
+The 3.2kb threshold can be changed by modifying the value of 'hbv_length' in select_full_reads.py
 
 Inputs are:\
 `./select_full_reads.sh $RUN_ID_PATH $OUTPUT_DIRECTORY $REFERENCE_FASTA $SAMPLE_ID`
 
 where the reference sequence should be two concatenated copies of the relevant genotype reference sequence.
 
-Then run `chop_and_correct_RCA.sh` \
+Then, run `chop_and_correct_RCA.sh` \
 The steps carried out in this script are as follows:
+
 (1) Select 100bp anchor at start of reference genome \
 (2) For each full length read: Find this anchor within the read using blast \
 (3)   Chop up read based on anchor locations -> create fastq for this read \
